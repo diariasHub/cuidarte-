@@ -17,4 +17,19 @@ yarn-error.log*
 .DS_Store
 Thumbs.db
 .vscode/
-.idea/
+.idea/
+# Variables de entorno y secretos (NO versionar)
+.env
+.env.*
+!.env.example
+BACKEND/.env
+FRONTEND/.env
+
+# Reportes de herramientas de seguridad/calidad
+zap-report.html
+coverage/
+BACKEND/coverage/
+
+# Cypress
+FRONTEND/cypress/videos/
+FRONTEND/cypress/screenshots/
