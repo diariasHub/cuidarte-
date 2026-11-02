@@ -1,0 +1,121 @@
+name: Quality and Security
+
+on:
+  push:
+    branches: [qa]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # 1) Análisis estático (ESLint) y pruebas unitarias (Jest)
+  static-and-unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Instalar dependencias (backend)
+        run: npm install
+        working-directory: BACKEND
+      - name: ESLint (backend)
+        run: npm run lint
+        working-directory: BACKEND
+      - name: Pruebas unitarias Jest (backend)
+        run: npm test
+        working-directory: BACKEND
+
+      - name: Instalar dependencias (frontend)
+        run: npm ci
+        working-directory: FRONTEND
+      - name: ESLint (frontend)
+        run: npm run lint
+        working-directory: FRONTEND
+        continue-on-error: true
+      - name: Build (frontend)
+        run: npm run build
+        working-directory: FRONTEND
+
+  # 2) Seguridad de dependencias (Snyk Open Source)
+  snyk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Instalar Snyk
+        run: npm install -g snyk
+      - name: Snyk (backend)
+        run: snyk test --severity-threshold=high
+        working-directory: BACKEND
+        continue-on-error: true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+      - name: Snyk (frontend)
+        run: snyk test --severity-threshold=high
+        working-directory: FRONTEND
+        continue-on-error: true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+
+  # 3) Pruebas funcionales (Cypress) y análisis dinámico (OWASP ZAP)
+  e2e-dast:
+    runs-on: ubuntu-latest
+    needs: static-and-unit
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: cuidarteplus
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Cargar esquema y datos de prueba
+        run: psql "postgres://postgres:postgres@localhost:5432/cuidarteplus" -f BACKEND/sql/dump-cuidarteplus.sql
+        continue-on-error: true
+
+      - name: Instalar y arrancar backend
+        working-directory: BACKEND
+        env:
+          PORT: 4000
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/cuidarteplus
+          JWT_SECRET: ci-secret-no-produccion
+        run: |
+          npm install
+          nohup node src/app.js > backend.log 2>&1 &
+          npx --yes wait-on http://localhost:4000 -t 60000
+
+      - name: Instalar y arrancar frontend (Vite)
+        working-directory: FRONTEND
+        env:
+          VITE_API_URL: http://localhost:4000
+        run: |
+          npm ci
+          nohup npm run dev -- --host 127.0.0.1 --port 5173 > vite.log 2>&1 &
+          npx --yes wait-on http://127.0.0.1:5173 -t 60000
+
+      - name: Pruebas funcionales (Cypress)
+        working-directory: FRONTEND
+        run: npx --yes cypress run
+        continue-on-error: true
+
+      - name: Análisis dinámico (OWASP ZAP Baseline)
+        uses: zaproxy/action-baseline@v0.12.0
+        with:
+          target: http://127.0.0.1:5173
+          fail_action: false
+        continue-on-error: true
