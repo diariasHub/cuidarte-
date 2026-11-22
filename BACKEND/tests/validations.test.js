@@ -14,14 +14,14 @@ describe("loginSchema (BACKEND/src/validations/auth.js)", () => {
 
 describe("registerSchema (BACKEND/src/validations/auth.js)", () => {
   test("rechaza un correo con formato invalido", async () => {
-    const datos = { nombre_usuario: "paciente1", password: "secreto123", correo: "correo-invalido" };
+    const datos = { nombre_usuario: "paciente1", password: "Cuidarte#Segura2026", correo: "correo-invalido" };
     await expect(registerSchema.validate(datos)).rejects.toThrow();
   });
 
   test("acepta un registro valido con RUT con puntos", async () => {
     const datos = {
       nombre_usuario: "paciente1",
-      password: "secreto123",
+      password: "Cuidarte#Segura2026",
       correo: "paciente1@correo.cl",
       rut: "16.234.578-8",
     };

@@ -33,3 +33,4 @@ BACKEND/coverage/
 # Cypress
 FRONTEND/cypress/videos/
 FRONTEND/cypress/screenshots/
+FRONTEND/cypress/results/
