@@ -1,28 +1,48 @@
-name: Quality and Security
+name: CI DevSecOps - Cuidarte+
 
+# Integración continua (solo CI, sin despliegue) sobre la rama QA.
+# Las etapas están encadenadas con "needs": si una etapa bloqueante falla
+# o se cancela, las siguientes quedan en "skipped" y el CI NO se completa.
 on:
   push:
     branches: [qa]
+  pull_request:
+    branches: [qa]
   workflow_dispatch:
+    inputs:
+      forzar_fallo:
+        description: "Demostración: forzar un fallo en la etapa 1 para ver el corte del pipeline"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
+# Un push nuevo a la misma rama cancela la ejecución anterior en curso.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  # 1) Análisis estático (ESLint) y pruebas unitarias (Jest)
-  static-and-unit:
+  # ── Etapa 1 · Compilación y pruebas unitarias (BLOQUEANTE) ─────────────
+  build-unit:
+    name: "1 · Build + pruebas unitarias (Jest)"
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
 
+      - name: Demostración de corte (solo si se fuerza manualmente)
+        if: ${{ inputs.forzar_fallo == true }}
+        run: |
+          echo "::error::Fallo forzado para la demostración del corte del pipeline"
+          exit 1
+
       - name: Instalar dependencias (backend)
         run: npm install
-        working-directory: BACKEND
-      - name: ESLint (backend)
-        run: npm run lint
         working-directory: BACKEND
       - name: Pruebas unitarias Jest (backend)
         run: npm test
@@ -31,41 +51,69 @@ jobs:
       - name: Instalar dependencias (frontend)
         run: npm ci
         working-directory: FRONTEND
-      - name: ESLint (frontend)
-        run: npm run lint
-        working-directory: FRONTEND
-        continue-on-error: true
-      - name: Build (frontend)
+      - name: Compilar frontend (Vite build)
         run: npm run build
         working-directory: FRONTEND
 
-  # 2) Seguridad de dependencias (Snyk Open Source)
-  snyk:
+  # ── Etapa 2 · Análisis estático SAST con ESLint ────────────────────────
+  sast:
+    name: "2 · SAST (ESLint)"
     runs-on: ubuntu-latest
+    needs: build-unit
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Instalar Snyk
+      - name: ESLint backend (BLOQUEANTE)
+        working-directory: BACKEND
+        run: |
+          npm install
+          npm run lint
+      - name: ESLint frontend (informativo, deuda técnica heredada)
+        working-directory: FRONTEND
+        continue-on-error: true
+        run: |
+          npm ci
+          npm run lint
+
+  # ── Etapa 3 · Verificación de dependencias SCA con Snyk ────────────────
+  dependencias:
+    name: "3 · Dependencias (Snyk)"
+    runs-on: ubuntu-latest
+    needs: sast
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Instalar Snyk CLI
         run: npm install -g snyk
-      - name: Snyk (backend)
-        run: snyk test --severity-threshold=high
+      - name: Snyk backend (informativo)
         working-directory: BACKEND
         continue-on-error: true
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-      - name: Snyk (frontend)
-        run: snyk test --severity-threshold=high
+        run: |
+          npm install
+          snyk test --severity-threshold=high
+      - name: Snyk frontend (informativo)
         working-directory: FRONTEND
         continue-on-error: true
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: |
+          npm ci
+          snyk test --severity-threshold=high
 
-  # 3) Pruebas funcionales (Cypress) y análisis dinámico (OWASP ZAP)
-  e2e-dast:
+  # ── Etapa 4 · Pruebas funcionales E2E con Cypress (BLOQUEANTE) ─────────
+  e2e:
+    name: "4 · Pruebas E2E (Cypress)"
     runs-on: ubuntu-latest
-    needs: static-and-unit
+    needs: dependencias
+    timeout-minutes: 15
     services:
       postgres:
         image: postgres:15-alpine
@@ -84,11 +132,10 @@ jobs:
         with:
           node-version: 22
 
-      - name: Cargar esquema y datos de prueba
+      - name: Cargar esquema y datos semilla de prueba
         run: psql "postgres://postgres:postgres@localhost:5432/cuidarteplus" -f BACKEND/sql/dump-cuidarteplus.sql
-        continue-on-error: true
 
-      - name: Instalar y arrancar backend
+      - name: Levantar backend (Express, puerto 4000)
         working-directory: BACKEND
         env:
           PORT: 4000
@@ -99,7 +146,7 @@ jobs:
           nohup node src/app.js > backend.log 2>&1 &
           npx --yes wait-on http://localhost:4000 -t 60000
 
-      - name: Instalar y arrancar frontend (Vite)
+      - name: Levantar frontend (Vite, puerto 5173)
         working-directory: FRONTEND
         env:
           VITE_API_URL: http://localhost:4000
@@ -108,14 +155,71 @@ jobs:
           nohup npm run dev -- --host 127.0.0.1 --port 5173 > vite.log 2>&1 &
           npx --yes wait-on http://127.0.0.1:5173 -t 60000
 
-      - name: Pruebas funcionales (Cypress)
+      - name: Ejecutar suite E2E (Login y Registro)
         working-directory: FRONTEND
-        run: npx --yes cypress run
-        continue-on-error: true
+        run: npx --yes cypress@13.17.0 run --browser electron
 
-      - name: Análisis dinámico (OWASP ZAP Baseline)
+      - name: Publicar tabla de resultados en el resumen del job
+        if: always()
+        working-directory: FRONTEND
+        run: |
+          if [ -f cypress/results/resultados.md ]; then
+            cat cypress/results/resultados.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No se generó la tabla de resultados (la ejecución se cortó antes)." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Guardar evidencias E2E (tabla, capturas y logs)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evidencias-e2e
+          path: |
+            FRONTEND/cypress/results/
+            FRONTEND/cypress/screenshots/
+            BACKEND/backend.log
+            FRONTEND/vite.log
+          if-no-files-found: ignore
+
+  # ── Etapa 5 · Análisis dinámico DAST con OWASP ZAP Baseline ────────────
+  dast:
+    name: "5 · DAST (OWASP ZAP Baseline)"
+    runs-on: ubuntu-latest
+    needs: e2e
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: cuidarteplus
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Cargar esquema y datos semilla de prueba
+        run: psql "postgres://postgres:postgres@localhost:5432/cuidarteplus" -f BACKEND/sql/dump-cuidarteplus.sql
+      - name: Levantar backend y frontend
+        env:
+          PORT: 4000
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/cuidarteplus
+          JWT_SECRET: ci-secret-no-produccion
+          VITE_API_URL: http://localhost:4000
+        run: |
+          (cd BACKEND && npm install && nohup node src/app.js > backend.log 2>&1 &)
+          (cd FRONTEND && npm ci && nohup npm run dev -- --host 0.0.0.0 --port 5173 > vite.log 2>&1 &)
+          npx --yes wait-on http://localhost:4000 http://localhost:5173 -t 120000
+      - name: OWASP ZAP Baseline (informativo)
         uses: zaproxy/action-baseline@v0.12.0
         with:
-          target: http://127.0.0.1:5173
+          target: http://localhost:5173
           fail_action: false
-        continue-on-error: true
+          allow_issue_writing: false
+          artifact_name: reporte-zap
