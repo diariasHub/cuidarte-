@@ -27,4 +27,9 @@ describe("registerSchema (BACKEND/src/validations/auth.js)", () => {
     };
     await expect(registerSchema.validate(datos)).resolves.toMatchObject({ nombre_usuario: "paciente1" });
   });
+
+  test("rechaza una contraseña de menos de 12 caracteres (CP-AUT-02)", async () => {
+    const datos = { nombre_usuario: "paciente1", password: "Clave#123", correo: "paciente1@correo.cl" };
+    await expect(registerSchema.validate(datos)).rejects.toThrow("al menos 12 caracteres");
+  });
 });
