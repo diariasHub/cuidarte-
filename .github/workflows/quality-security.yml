@@ -217,9 +217,16 @@ jobs:
           (cd FRONTEND && npm ci && nohup npm run dev -- --host 0.0.0.0 --port 5173 > vite.log 2>&1 &)
           npx --yes wait-on http://localhost:4000 http://localhost:5173 -t 120000
       - name: OWASP ZAP Baseline (informativo)
-        uses: zaproxy/action-baseline@v0.12.0
+        run: |
+          mkdir -p zap && chmod 777 zap
+          docker run --rm --network host -v "$PWD/zap:/zap/wrk:rw" \
+            ghcr.io/zaproxy/zaproxy:stable \
+            zap-baseline.py -t http://localhost:5173 -r reporte-zap.html -I \
+            || echo "::warning::ZAP reportó hallazgos (etapa informativa)"
+      - name: Guardar reporte ZAP
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          target: http://localhost:5173
-          fail_action: false
-          allow_issue_writing: false
-          artifact_name: reporte-zap
+          name: reporte-zap
+          path: zap/reporte-zap.html
+          if-no-files-found: ignore
