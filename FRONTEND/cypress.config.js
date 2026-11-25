@@ -1,4 +1,3 @@
-import { defineConfig } from "cypress";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -49,7 +48,9 @@ function escribirResultados(results) {
   fs.writeFileSync(path.join(dir, "resultados.md"), md);
 }
 
-export default defineConfig({
+// Objeto de configuración plano: Cypress se ejecuta con npx en el CI y no
+// está instalado como dependencia, así que no se importa defineConfig.
+export default {
   e2e: {
     baseUrl: "http://127.0.0.1:5173",
     supportFile: false,
@@ -60,4 +61,4 @@ export default defineConfig({
       on("after:run", escribirResultados);
     },
   },
-});
+};
